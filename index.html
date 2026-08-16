@@ -216,7 +216,26 @@
   .nothing-owed { color: var(--ink-muted); padding: 10px 2px; font-style: italic; font-family: var(--serif); }
 
   /* ---------- Contact list ---------- */
-  #contacts h2 { margin-bottom: 4px; }
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 4px;
+  }
+  .viewby { margin-left: auto; display: flex; align-items: baseline; gap: 2px; }
+  .viewby button {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    padding: 8px 9px;
+    min-height: 36px;
+    border-radius: 5px;
+  }
+  .viewby button:hover { color: var(--ink); }
+  .viewby button[aria-pressed="true"] { color: var(--ink); background: var(--rule-faint); }
   .letter-head {
     scroll-margin-top: 108px;
     font-family: var(--serif);
@@ -440,7 +459,14 @@
         <div id="owed-list"></div>
       </section>
       <section id="contacts" aria-label="Contacts">
-        <h2 class="eyebrow" id="contacts-head" aria-live="polite">People</h2>
+        <div class="section-head">
+          <h2 class="eyebrow" id="contacts-head" aria-live="polite">People</h2>
+          <div class="viewby" role="group" aria-label="Group the list by">
+            <span class="eyebrow" aria-hidden="true">View</span>
+            <button data-view="company" aria-pressed="true">Company</button>
+            <button data-view="name" aria-pressed="false">Name</button>
+          </div>
+        </div>
         <div id="contact-list"></div>
       </section>
       <footer id="foot"></footer>
@@ -460,6 +486,8 @@
   "use strict";
   const REPO = "michaelcgreenberg/personal-crm";
   const KEY = "register.pat";
+  const VIEW_KEY = "register.view";
+  const RAIL_KEYS = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"];
   const $ = (id) => document.getElementById(id);
   const els = {
     gate: $("gate"), gateForm: $("gate-form"), gateError: $("gate-error"),
@@ -469,7 +497,13 @@
     rail: $("rail"), foot: $("foot"), scrim: $("card-scrim"), card: $("card"),
     refresh: $("refresh"), lock: $("lock"),
   };
-  const state = { data: null, query: "", fetchedAt: null, cardOpen: false, lastFocus: null };
+  const state = {
+    data: null, query: "", fetchedAt: null, cardOpen: false, lastFocus: null,
+    view: localStorage.getItem(VIEW_KEY) === "name" ? "name" : "company",
+  };
+  // What the list is grouped and sorted by. Falls back to the name when a
+  // record has no company, so nobody drops out of the company view.
+  const groupOf = (c) => (state.view === "company" ? c.company || c.name : c.name);
   const today = () => new Date().toISOString().slice(0, 10);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -572,7 +606,8 @@
       : `<p class="nothing-owed">Nothing owed.</p>`;
 
     // Contacts
-    const shown = q ? all.filter((c) => matches(c, tokens)) : all;
+    const shown = (q ? all.filter((c) => matches(c, tokens)) : all.slice())
+      .sort((a, b) => groupOf(a).localeCompare(groupOf(b)) || a.name.localeCompare(b.name));
     els.contactsHead.textContent = q ? `Matches (${shown.length})` : `People (${all.length})`;
     if (!shown.length) {
       els.contactList.innerHTML = `<p class="list-empty">${
@@ -583,30 +618,37 @@
     } else {
       let out = "", last = "";
       for (const c of shown) {
-        const L = letterOf(c.name);
+        const L = letterOf(groupOf(c));
         if (L !== last) { out += `<h3 class="letter-head" id="letter-${L}">${L}</h3>`; last = L; }
         out += personRow(c, "");
       }
       els.contactList.innerHTML = out;
     }
 
-    renderRail(q ? new Set() : new Set(shown.map((c) => letterOf(c.name))));
+    renderRail(q ? new Set() : new Set(shown.map((c) => letterOf(groupOf(c)))));
+    document.querySelectorAll("[data-view]").forEach((b) =>
+      b.setAttribute("aria-pressed", String(b.dataset.view === state.view)));
     const at = state.fetchedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     els.foot.innerHTML = `<span>${all.length} people</span><span aria-hidden="true">·</span><span>as of ${at}</span>`;
   }
 
   function personRow(c, snippet) {
+    // The line you are browsing by leads; the other identity sits underneath.
+    const lead = groupOf(c);
+    const under = state.view === "company"
+      ? [c.name, c.role].filter(Boolean).join(" · ")
+      : [c.company, c.role].filter(Boolean).join(" · ");
     return `
       <button class="person" data-open="${esc(c.file)}">
-        <span class="person-name">${esc(c.name)}${c.follow_up ? ` <span class="due-mark" title="Follow-up owed" aria-hidden="true">•</span>` : ""}</span>
-        <span class="person-meta">${esc([c.company, c.role].filter(Boolean).join(" · "))}</span>
+        <span class="person-name">${esc(lead)}${c.follow_up ? ` <span class="due-mark" title="Follow-up owed" aria-hidden="true">•</span>` : ""}</span>
+        <span class="person-meta">${esc(under)}</span>
         ${snippet ? `<span class="person-snippet">${snippet}</span>` : ""}
       </button>`;
   }
 
   function renderRail(present) {
     els.rail.hidden = present.size === 0;
-    els.rail.innerHTML = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")
+    els.rail.innerHTML = RAIL_KEYS
       .map((L) => `<button ${present.has(L) ? "data-has" : "tabindex=\"-1\" aria-disabled=\"true\""} data-letter="${L}">${L}</button>`)
       .join("");
   }
@@ -692,6 +734,14 @@
     open(els.token.value.trim(), { fromGate: true });
   });
   els.search.addEventListener("input", () => { state.query = els.search.value; render(); });
+  document.querySelectorAll("[data-view]").forEach((b) =>
+    b.addEventListener("click", () => {
+      if (state.view === b.dataset.view) return;
+      state.view = b.dataset.view;
+      localStorage.setItem(VIEW_KEY, state.view);
+      render();
+      window.scrollTo({ top: 0 });
+    }));
   els.refresh.addEventListener("click", () => open(localStorage.getItem(KEY)));
   els.lock.addEventListener("click", () => { localStorage.removeItem(KEY); location.reload(); });
   document.addEventListener("click", (e) => {
