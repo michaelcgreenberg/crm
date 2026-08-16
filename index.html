@@ -269,6 +269,34 @@
   .company-row[aria-expanded="true"] .company-caret { color: var(--red); }
   .company-people { padding-left: 14px; border-left: 2px solid var(--rule); margin-left: 2px; }
   .company-people[hidden] { display: none; }
+  .portfolio { padding: 12px 2px 14px; }
+  .portfolio ul { list-style: none; padding: 0; margin: 5px 0 0; }
+  .portfolio li {
+    font-family: var(--serif);
+    font-size: 14.5px;
+    padding: 3px 0;
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .pcountry { font-family: var(--mono); font-size: 10.5px; color: var(--ink-muted); flex-shrink: 0; }
+
+  #country {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink);
+    background: var(--raised);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 7px 8px;
+    min-height: 36px;
+    max-width: 190px;
+  }
+  #country[data-on] { border-color: var(--red); color: var(--red); }
+  .filter-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 
   .avatar {
     flex-shrink: 0;
@@ -525,7 +553,11 @@
         </nav>
       </div>
       <label class="visually-hidden" for="search">Search people, companies, notes</label>
-      <input id="search" name="q" type="search" placeholder="Search people, companies, notes…" autocomplete="off">
+      <input id="search" name="q" type="search" placeholder="Search people, companies, properties…" autocomplete="off">
+      <div class="filter-row">
+        <label class="eyebrow" for="country">Country</label>
+        <select id="country" name="country"><option value="">All countries</option></select>
+      </div>
     </header>
     <main id="main">
       <section id="owed" aria-label="Follow-ups owed">
@@ -569,10 +601,10 @@
     search: $("search"), owed: $("owed"), owedList: $("owed-list"),
     contactsHead: $("contacts-head"), contactList: $("contact-list"),
     rail: $("rail"), foot: $("foot"), scrim: $("card-scrim"), card: $("card"),
-    refresh: $("refresh"), lock: $("lock"),
+    refresh: $("refresh"), lock: $("lock"), country: $("country"),
   };
   const state = {
-    data: null, query: "", fetchedAt: null, cardOpen: false, lastFocus: null,
+    data: null, query: "", fetchedAt: null, cardOpen: false, lastFocus: null, country: "",
     view: localStorage.getItem(VIEW_KEY) === "name" ? "name" : "company",
   };
   // What the list is grouped and sorted by. Falls back to the name when a
@@ -630,6 +662,11 @@
       localStorage.setItem(KEY, token);
       els.gate.hidden = true;
       els.app.hidden = false;
+      const sel = state.country;
+      els.country.innerHTML = `<option value="">All countries</option>` +
+        (state.data.countries || []).map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
+      els.country.value = (state.data.countries || []).includes(sel) ? sel : "";
+      state.country = els.country.value;
       render();
       document.title = `Register · ${state.data.contacts.length} people`;
     } catch (err) {
@@ -654,8 +691,12 @@
   }
 
   /* ---------- Search ---------- */
-  const haystack = (c) => [c.name, c.company, c.role, c.tags, c.met, c.follow_up_note, c.notes]
-    .join(" ").toLowerCase();
+  const propsOf = (c) => (state.data.companies?.[c.company]?.properties) || [];
+  // Property names and countries are searchable, so typing a hotel finds whoever covers it.
+  const haystack = (c) => [
+    c.name, c.company, c.role, c.tags, c.met, c.follow_up_note, c.notes,
+    ...propsOf(c).flatMap((p) => [p.name, p.country]),
+  ].join(" ").toLowerCase();
   function matches(c, tokens) {
     const h = c._hay || (c._hay = haystack(c));
     return tokens.every((t) => h.includes(t));
@@ -692,15 +733,20 @@
           </button>`).join("")
       : `<p class="nothing-owed">Nothing owed.</p>`;
 
-    // Contacts
-    const shown = (q ? all.filter((c) => matches(c, tokens)) : all.slice())
+    // Contacts. Country narrows to companies holding a property there.
+    const inCountry = (c) =>
+      !state.country || propsOf(c).some((p) => p.country === state.country);
+    const pool = all.filter(inCountry);
+    const shown = (q ? pool.filter((c) => matches(c, tokens)) : pool.slice())
       .sort((a, b) => groupOf(a).localeCompare(groupOf(b)) || a.name.localeCompare(b.name));
-    els.contactsHead.textContent = q ? `Matches (${shown.length})` : `People (${all.length})`;
+    els.contactsHead.textContent = q || state.country
+      ? `Matches (${shown.length})`
+      : `People (${all.length})`;
     if (!shown.length) {
       els.contactList.innerHTML = `<p class="list-empty">${
         all.length ? `No one matches “${esc(state.query.trim())}”.`
                    : "No one here yet. Tell Claude: “log that I met…”"}</p>`;
-    } else if (q) {
+    } else if (q && state.view === "name") {
       els.contactList.innerHTML = shown.map((c) => personRow(c, snippetFor(c, tokens))).join("");
     } else if (state.view === "company") {
       // One row per property; expand to see who is there.
@@ -712,8 +758,12 @@
       }
       let out = "", last = "";
       for (const [company, people] of groups) {
-        const L = letterOf(company);
-        if (L !== last) { out += `<h3 class="letter-head" id="letter-${L}">${L}</h3>`; last = L; }
+        // A filtered list is short; skip the A–Z scaffolding and just show the hits.
+        if (!q && !state.country) {
+          const L = letterOf(company);
+          if (L !== last) { out += `<h3 class="letter-head" id="letter-${L}">${L}</h3>`; last = L; }
+        }
+        if (q || state.country) openCompanies.add(company);
         out += companyRow(company, people);
       }
       els.contactList.innerHTML = out;
@@ -727,7 +777,7 @@
       els.contactList.innerHTML = out;
     }
 
-    renderRail(q ? new Set() : new Set(shown.map((c) => letterOf(groupOf(c)))));
+    renderRail(q || state.country ? new Set() : new Set(shown.map((c) => letterOf(groupOf(c)))));
     document.querySelectorAll("[data-view]").forEach((b) =>
       b.setAttribute("aria-pressed", String(b.dataset.view === state.view)));
     const at = state.fetchedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -746,29 +796,28 @@
       </button>`;
   }
 
+  // Every company nests, single-contact ones included, so the list reads the same way throughout.
   function companyRow(company, people) {
-    // A single contact needs no disclosure — the row opens their card directly.
-    if (people.length === 1) {
-      const c = people[0];
-      return `
-        <button class="person" data-open="${esc(c.file)}">
-          ${avatar(c)}
-          <span class="person-text">
-            <span class="person-name">${esc(company)}${c.follow_up ? ` <span class="due-mark" title="Follow-up owed" aria-hidden="true">•</span>` : ""}</span>
-            <span class="person-meta">${esc([c.name, c.role].filter(Boolean).join(" · "))}</span>
-          </span>
-        </button>`;
-    }
     const open = openCompanies.has(company);
     const owed = people.filter((c) => c.follow_up).length;
+    const props = (state.data.companies?.[company]?.properties) || [];
+    const sub = [
+      `${people.length} ${people.length === 1 ? "person" : "people"}`,
+      props.length ? `${props.length} ${props.length === 1 ? "property" : "properties"}` : "",
+    ].filter(Boolean).join(" · ");
     return `
       <button class="company-row" data-company="${esc(company)}" aria-expanded="${open}">
         <span class="company-name">${esc(company)}${owed ? ` <span class="due-mark" title="${owed} follow-up owed" aria-hidden="true">•</span>` : ""}</span>
-        <span class="company-sub">${people.length} people</span>
+        <span class="company-sub">${sub}</span>
         <span class="company-caret">${open ? "Hide" : "Show"}</span>
       </button>
       <div class="company-people" ${open ? "" : "hidden"}>
         ${people.map((c) => personRow(c, "")).join("")}
+        ${props.length ? `
+          <div class="portfolio">
+            <span class="eyebrow">Portfolio</span>
+            <ul>${props.map((p) => `<li>${esc(p.name)}${p.country ? ` <span class="pcountry">${esc(p.country)}</span>` : ""}</li>`).join("")}</ul>
+          </div>` : ""}
       </div>`;
   }
 
@@ -888,6 +937,11 @@
     open(els.token.value.trim(), { fromGate: true });
   });
   els.search.addEventListener("input", () => { state.query = els.search.value; render(); });
+  els.country.addEventListener("change", () => {
+    state.country = els.country.value;
+    els.country.toggleAttribute("data-on", !!state.country);
+    render();
+  });
   document.querySelectorAll("[data-view]").forEach((b) =>
     b.addEventListener("click", () => {
       if (state.view === b.dataset.view) return;
